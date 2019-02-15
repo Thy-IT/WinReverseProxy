@@ -1,8 +1,33 @@
-FROM debian:buster-slim
-LABEL maintainer "Mikkel Kaas <mk@thy-it.com>"
+# escape=`
 
-RUN apt update && apt upgrade -y && rm -rf /var/lib/apt/lists/*
+FROM microsoft/windowsservercore AS installer
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
 
-#EXPOSE 80 443
+ENV UMBRACO_VERSION="7.13.2" `
+    UMBRACO_DOWNLOAD_ID="270489"
 
-#CMD["nginx","-g","daemon off;"]
+RUN Invoke-WebRequest -UseBasicParsing -OutFile umbraco.zip -Uri "https://our.umbraco.org/ReleaseDownload?id=$($env:UMBRACO_DOWNLOAD_ID)"; `
+    Expand-Archive umbraco.zip -DestinationPath C:\umbraco
+
+# app image
+FROM microsoft/aspnet:windowsservercore-10.0.14393.1066
+SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+
+ENV UMBRACO_VERSION="7.13.2" `
+    UMBRACO_ROOT="C:\inetpub\wwwroot\Umbraco"
+
+RUN Remove-Website 'Default Web Site'; `
+    New-Item -Path $env:UMBRACO_ROOT -Type Directory -Force; `
+    New-Website -Name 'umbraco' -PhysicalPath $env:UMBRACO_ROOT -Port 80 -Force; 
+
+HEALTHCHECK --interval=5s `
+ CMD powershell -command `
+    try { `
+     $response = iwr http://localhost/ -UseBasicParsing; `
+     if ($response.StatusCode -eq 200) { return 0} `
+     else {return 1}; `
+    } catch { return 1 }
+
+COPY --from=installer C:\umbraco ${UMBRACO_ROOT}
+COPY Set-UmbracoAcl.ps1 C:\
+RUN C:\Set-UmbracoAcl.ps1
